@@ -61,6 +61,7 @@ def read_corpus(
     corpus_uris: list[str],
     sep: str,
     file_ext: str,
+    keep_index: int,
     source_sample_factor: int | float | None,
     sample_random_state: int | None,
 ) -> list[str]:
@@ -84,9 +85,8 @@ def read_corpus(
                     cur_texts.append(f_in.read())
 
         else:
-            df: t.Union[pd.DataFrame, list[t.Any]]
-            df = pd.read_csv(curi, sep=sep)
-            df = df.iloc[:, 0].tolist()
+            df: list[t.Any]
+            df = pd.read_csv(curi, usecols=keep_index, sep=sep).squeeze().tolist()
             df = sample_items_(df, source_sample_factor=source_sample_factor)
 
             print(f"{print_prefix}{len(cur_texts)} non-empty items from corpus.")
@@ -331,6 +331,7 @@ def run(args) -> None:
     texts = read_corpus(
         corpus_uris=args.corpus_uris,
         sep=args.corpus_file_sep,
+        keep_index=args.corpus_file_col_index,
         file_ext=args.corpus_dir_ext,
         source_sample_factor=args.source_sample_factor,
         sample_random_state=args.sample_random_state,
@@ -383,7 +384,12 @@ def run(args) -> None:
 
     embs = (embs - embs.min(axis=0)) / np.ptp(embs, axis=0)
 
-    fig, ax = plt.subplots(1, figsize=(args.fig_width, args.fig_height), layout="tight")
+    inches_to_pixels = 1.0 / plt.rcParams["figure.dpi"]
+    fig, ax = plt.subplots(
+        1,
+        figsize=(args.fig_width * inches_to_pixels, args.fig_height * inches_to_pixels),
+        layout="tight",
+    )
 
     try:
         cluster_ids, medoids = cluster_embs(
@@ -397,7 +403,7 @@ def run(args) -> None:
 
     plot_base(fig=fig, ax=ax, embs=embs, cluster_ids=cluster_ids, args=args, remove_labels=True)
 
-    user_banned_tokens = set(args.banned_tokens.split(",")) if args.banned_tokens else set()
+    user_banned_tokens = set(args.banned_keywords.split(",")) if args.banned_keywords else set()
 
     if user_banned_tokens:
         print(f"Found {len(user_banned_tokens)} custom banned tokens.")
@@ -429,58 +435,226 @@ def run(args) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument("sbert_uri")
-    parser.add_argument("corpus_uris", action="extend", nargs="+", type=str)
-    parser.add_argument("--output", "-o", default="output.pdf")
-    parser.add_argument("--cache-dir", default="./cache")
-    parser.add_argument("--ignore-cache", action="store_true")
-    parser.add_argument("--disable-progress-bar", action="store_true")
+    parser.add_argument(
+        "sbert_uri", help="Path to the Sentence Transformer used to embed documents."
+    )
+    parser.add_argument(
+        "corpus_uris",
+        action="extend",
+        nargs="+",
+        type=str,
+        help="One or more paths to copora files.",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default="output.pdf",
+        help="Output file URI. Setting to blank disables saving the output file.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default="./cache",
+        help="Directory to cache embeddings and very common words.",
+    )
+    parser.add_argument(
+        "--ignore-cache",
+        action="store_true",
+        help="If set, force recomputation of any cached value.",
+    )
+    parser.add_argument(
+        "--disable-progress-bar", action="store_true", help="If set, disable all progress bars."
+    )
 
     parser_plot = parser.add_argument_group("plot arguments")
-    parser_plot.add_argument("--scatterplot-palette", default="hsv")
-    parser_plot.add_argument("--kdeplot-thresh", default=1e-3, type=float)
-    parser_plot.add_argument("--kdeplot-levels", default=12, type=int)
-    parser_plot.add_argument("--kdeplot-alpha", default=1.0, type=float)
-    parser_plot.add_argument("--kdeplot-cmap", default="viridis")
-    parser_plot.add_argument("--arrow-color", default="black")
-    parser_plot.add_argument("--arrow-alpha", default=0.80, type=float)
-    parser_plot.add_argument("--arrow-linestyle", default="dashed")
-    parser_plot.add_argument("--arrow-linewidth", default=2.0, type=float)
-    parser_plot.add_argument("--keyword-inflate-prop", default=0.05, type=float)
-    parser_plot.add_argument("--fig-width", default=12.0, type=float)
-    parser_plot.add_argument("--fig-height", default=8.0, type=float)
-    parser_plot.add_argument("--do-not-show", action="store_true")
+    parser_plot.add_argument(
+        "--scatterplot-palette",
+        default="hsv",
+        help="Matplotlib pallete color for scatter plot. See 'https://matplotlib.org/stable/tutorials/colors/colormaps.html'.",
+    )
+    parser_plot.add_argument(
+        "--kdeplot-thresh",
+        default=1e-3,
+        type=float,
+        help=(
+            "KDE plot threshold to set the lowest contour plot level drawn. "
+            "See 'https://seaborn.pydata.org/generated/seaborn.kdeplot.html'."
+        ),
+    )
+    parser_plot.add_argument(
+        "--kdeplot-levels", default=12, type=int, help="Set the number of contour plot levels."
+    )
+    parser_plot.add_argument(
+        "--kdeplot-alpha",
+        default=1.0,
+        type=float,
+        help="Set the transparency level to contour plot. Must be in [0, 1] range.",
+    )
+    parser_plot.add_argument(
+        "--kdeplot-cmap",
+        default="viridis",
+        help="Matplotlib color map for contour plot. See 'https://matplotlib.org/stable/tutorials/colors/colormaps.html'.",
+    )
+    parser_plot.add_argument(
+        "--arrow-color",
+        default="black",
+        help="Color for arrows connecting cluster and their keyword boxes.",
+    )
+    parser_plot.add_argument(
+        "--arrow-alpha",
+        default=0.80,
+        type=float,
+        help="Transparency level for cluster-keyword arrows. Must be in [0, 1] range.",
+    )
+    parser_plot.add_argument(
+        "--arrow-linestyle",
+        default="dashed",
+        help="Line style for cluster-keyword arrows. See 'https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html'.",
+    )
+    parser_plot.add_argument(
+        "--arrow-linewidth", default=2.0, type=float, help="Line width for cluster-keyword arrows."
+    )
+    parser_plot.add_argument(
+        "--keyword-inflate-prop",
+        default=0.05,
+        type=float,
+        help="Horizontal figure proportion for which keyword boxes are placed outside the plot axis.",
+    )
+    parser_plot.add_argument(
+        "--fig-width", default=1024, type=float, help="Set plot figure width. Unit is pixels."
+    )
+    parser_plot.add_argument(
+        "--fig-height", default=768, type=float, help="Set plot figure height. Unit is pixels."
+    )
+    parser_plot.add_argument(
+        "--do-not-show", action="store_true", help="If set, disable output display."
+    )
 
     parser_sbert = parser.add_argument_group("dbscan arguments")
-    parser_sbert.add_argument("--dbscan-eps", default=0.05, type=float)
-    parser_sbert.add_argument("--dbscan-min-samples", default=10, type=int)
+    parser_sbert.add_argument(
+        "--dbscan-eps",
+        default=0.05,
+        type=float,
+        help="DBSCAN radius size. See 'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'.",
+    )
+    parser_sbert.add_argument(
+        "--dbscan-min-samples",
+        default=10,
+        type=int,
+        help=(
+            "DBSCAN minimum number of connected points for core points. "
+            "See 'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'."
+        ),
+    )
 
     parser_control = parser.add_argument_group("keywords arguments")
-    parser_control.add_argument("--keywords-per-cluster", default=3, type=int)
-    parser_control.add_argument("--keyword-sep", default="\n", type=str)
-    parser_control.add_argument("--banned-tokens", default=None, type=str)
-    parser_control.add_argument("--keyword-minimum-length", default=3, type=int)
-    parser_control.add_argument("--keyword-font-size", default=10, type=int)
-    parser_control.add_argument("--very-common-tokens-cutoff", default=0.01, type=float)
-    parser_control.add_argument("--spacy-model-name", default="pt_core_news_sm")
+    parser_control.add_argument(
+        "--keywords-per-cluster", default=3, type=int, help="Number of keywords per cluster."
+    )
+    parser_control.add_argument(
+        "--keyword-sep",
+        default="\n",
+        type=str,
+        help="String used to separate keywords of each cluster.",
+    )
+    parser_control.add_argument(
+        "--banned-keywords",
+        default=None,
+        type=str,
+        help="List of banned keywords. To provide multiple words, separate by ',' (comma).",
+    )
+    parser_control.add_argument(
+        "--keyword-minimum-length",
+        default=3,
+        type=int,
+        help="Minimum length (in characters) of keyword candidates.",
+    )
+    parser_control.add_argument(
+        "--keyword-font-size", default=10, type=int, help="Font size for displaying keywords."
+    )
+    parser_control.add_argument(
+        "--very-common-tokens-cutoff",
+        default=0.01,
+        type=float,
+        help=(
+            "Proportion of words considered 'very common', which are disallowed to become "
+            "cluster keywords. Must be in [0, 1] range."
+        ),
+    )
+    parser_control.add_argument(
+        "--spacy-model-name",
+        default="pt_core_news_sm",
+        help="Spacy model name to apply lemmatization.",
+    )
 
     parser_sbert = parser.add_argument_group("sbert arguments")
-    parser_sbert.add_argument("--sbert-device", default=None, type=str)
-    parser_sbert.add_argument("--sbert-batch-size", default=128, type=int)
+    parser_sbert.add_argument(
+        "--sbert-device",
+        default=None,
+        type=str,
+        help="Device to embed documents using SBERT. If not provided, will use GPU if possible.",
+    )
+    parser_sbert.add_argument(
+        "--sbert-batch-size", default=128, type=int, help="SBERT batch size for document embedding."
+    )
 
-    parserumap = parser.add_argument_group("umap arguments")
-    parserumap.add_argument("--umap-random-state", default=182783, type=int)
+    parser_umap = parser.add_argument_group("umap arguments")
+    parser_umap.add_argument(
+        "--umap-random-state", default=182783, type=int, help="Random seed for UMAP."
+    )
 
     parser_corpus = parser.add_argument_group("corpus arguments")
-    parser_corpus.add_argument("--corpus-file-sep", default=",")
-    parser_corpus.add_argument("--corpus-dir-ext", default="txt")
-    parser_corpus.add_argument("--source-sample-factor", default=None, type=float)
-    parser_corpus.add_argument("--sample-random-state", default=8101192, type=int)
+    parser_corpus.add_argument(
+        "--corpus-file-sep",
+        default=",",
+        help="Column separator when reading corpus from a single file.",
+    )
+    parser_corpus.add_argument(
+        "--corpus-file-col-index",
+        default=0,
+        help="Column index to keep when reading corpus from a single file.",
+    )
+    parser_corpus.add_argument(
+        "--corpus-dir-ext",
+        default="txt",
+        help="File extension to find files when reading corpus from a directory hierarchy.",
+    )
+    parser_corpus.add_argument(
+        "--source-sample-factor",
+        default=None,
+        type=float,
+        help=(
+            "If provided, set the sample factor for each corpus source. "
+            "Can be either a float in range [0, 1) (sample by proportion), "
+            "or an integer >= 1 (sample maximum size)."
+        ),
+    )
+    parser_corpus.add_argument(
+        "--sample-random-state",
+        default=8101192,
+        type=int,
+        help="Random state for source instance sampling.",
+    )
 
     parser_seaborn = parser.add_argument_group("seaborn arguments")
-    parser_seaborn.add_argument("--seaborn-context", default="paper")
-    parser_seaborn.add_argument("--seaborn-style", default="whitegrid")
-    parser_seaborn.add_argument("--seaborn-font-scale", default=1.0, type=float)
+    parser_seaborn.add_argument(
+        "--seaborn-context",
+        default="paper",
+        help=(
+            "Set seaborn plot context. "
+            "See 'https://seaborn.pydata.org/generated/seaborn.set_context.html'."
+        ),
+    )
+    parser_seaborn.add_argument(
+        "--seaborn-style",
+        default="whitegrid",
+        help=(
+            "Set seaborn plot style. "
+            "See 'https://seaborn.pydata.org/generated/seaborn.set_style.html'."
+        ),
+    )
+    parser_seaborn.add_argument(
+        "--seaborn-font-scale", default=1.0, type=float, help="Set seaborn font scaling factor."
+    )
 
     args = parser.parse_args()
 
