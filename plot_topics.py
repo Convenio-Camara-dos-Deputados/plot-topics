@@ -117,7 +117,7 @@ def cluster_embs(
     clusters = clusters[clusters >= 0]
 
     n_clusters = clusters.size + 1
-    print("Number of clusters:", n_clusters)
+    print("Number of clusters (includes noise 'cluster' if present):", n_clusters)
 
     if n_clusters == 1:
         raise ValueError(
