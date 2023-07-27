@@ -64,6 +64,7 @@ def read_corpus(
     keep_index: int,
     source_sample_factor: int | float | None,
     sample_random_state: int | None,
+    max_chars_per_instance: int | None,
 ) -> list[str]:
     texts: list[str] = []
 
@@ -73,6 +74,9 @@ def read_corpus(
 
     if sample_random_state is not None:
         random.seed(sample_random_state)
+
+    if max_chars_per_instance is None:
+        max_chars_per_instance = -1
 
     for curi in corpus_uris:
         print_prefix: str = f"({curi}) {'Read' if source_sample_factor is None else 'Sampled'} "
@@ -86,7 +90,7 @@ def read_corpus(
             cur_texts: list[str] = []
             for furi in furis:
                 with open(furi, "r", encoding="utf-8") as f_in:
-                    cur_texts.append(f_in.read())
+                    cur_texts.append(f_in.read(max_chars_per_instance))
 
         else:
             cur_texts = (
@@ -94,6 +98,10 @@ def read_corpus(
             )
             cur_texts = sample_items_(cur_texts, source_sample_factor=source_sample_factor)
             cur_texts = [str(item) for item in cur_texts if item]
+
+            if max_chars_per_instance > 0:
+                cur_texts = [item[:max_chars_per_instance] for item in cur_texts]
+
             print(f"{print_prefix}{len(cur_texts)} non-empty items from corpus.")
 
         texts.extend(cur_texts)
@@ -108,12 +116,43 @@ def read_corpus(
 
 
 def cluster_embs(
-    embs: npt.NDArray[np.float64], dbscan_kwargs: dict[str, t.Any]
+    embs: npt.NDArray[np.float64],
+    dbscan_kwargs: dict[str, t.Any],
+    n_clusters: int | None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    clusterer = sklearn.cluster.DBSCAN(**dbscan_kwargs)
-    cluster_ids: npt.NDArray[np.int64] = clusterer.fit_predict(embs)
+    if n_clusters is None:
+        clusterer = sklearn.cluster.DBSCAN(**dbscan_kwargs)
+        cluster_ids: npt.NDArray[np.int64] = clusterer.fit_predict(embs)
+        clusters = np.unique(cluster_ids)
 
-    clusters = np.unique(cluster_ids)
+    else:
+        eps_min, eps_max = 0.0, 0.71
+        dbscan_kwargs_copy = dbscan_kwargs.copy()
+
+        for i in range(1, 1 + 50):
+            if eps_max - eps_min <= 1e-6:
+                break
+
+            eps_mid = 0.50 * (eps_min + eps_max)
+            dbscan_kwargs_copy["eps"] = eps_mid
+            clusterer = sklearn.cluster.DBSCAN(**dbscan_kwargs_copy)
+            cluster_ids = clusterer.fit_predict(embs)
+            clusters = np.unique(cluster_ids)
+
+            if clusters.size == n_clusters:
+                print(
+                    f"{colorama.Fore.BLUE}"
+                    f"Found the requested number of clusters (#{i} optimization iteration): "
+                    f"eps={eps_mid:.4f} (you can avoid reoptimization by using "
+                    f"--dbscan-eps={eps_mid:.4f} in future runs).{colorama.Style.RESET_ALL}"
+                )
+                break
+
+            elif clusters.size > n_clusters:
+                eps_min = eps_mid
+            else:
+                eps_max = eps_mid
+
     clusters = clusters[clusters >= 0]
 
     n_clusters = clusters.size + 1
@@ -338,6 +377,7 @@ def run(args) -> None:
         file_ext=args.corpus_dir_ext,
         source_sample_factor=args.source_sample_factor,
         sample_random_state=args.sample_random_state,
+        max_chars_per_instance=args.max_chars_per_instance,
     )
 
     embs_uri = build_cache_uri("embs", args)
@@ -352,7 +392,9 @@ def run(args) -> None:
         projector = umap.UMAP(n_components=2, metric="cosine", random_state=args.umap_random_state)
 
         embs = sbert.encode(
-            texts, batch_size=args.sbert_batch_size, show_progress_bar=not args.disable_progress_bar
+            texts,
+            batch_size=args.sbert_batch_size,
+            show_progress_bar=not args.disable_progress_bar,
         )
 
         with warnings.catch_warnings():
@@ -396,7 +438,12 @@ def run(args) -> None:
 
     try:
         cluster_ids, medoids = cluster_embs(
-            embs, dbscan_kwargs={"eps": args.dbscan_eps, "min_samples": args.dbscan_min_samples}
+            embs,
+            dbscan_kwargs={
+                "eps": args.dbscan_eps,
+                "min_samples": args.dbscan_min_samples,
+            },
+            n_clusters=args.n_clusters,
         )
 
     except ValueError as err:
@@ -404,7 +451,14 @@ def run(args) -> None:
         plt.show()
         raise ValueError from err
 
-    plot_base(fig=fig, ax=ax, embs=embs, cluster_ids=cluster_ids, args=args, remove_labels=True)
+    plot_base(
+        fig=fig,
+        ax=ax,
+        embs=embs,
+        cluster_ids=cluster_ids,
+        args=args,
+        remove_labels=True,
+    )
 
     user_banned_tokens = set(args.banned_keywords.split(",")) if args.banned_keywords else set()
 
@@ -433,6 +487,7 @@ def run(args) -> None:
 
     if args.output:
         fig.savefig(args.output, bbox_inches=0)
+        print(f"Saved plot as '{args.output}'.")
 
 
 if __name__ == "__main__":
@@ -465,7 +520,9 @@ if __name__ == "__main__":
         help="If set, force recomputation of any cached value.",
     )
     parser.add_argument(
-        "--disable-progress-bar", action="store_true", help="If set, disable all progress bars."
+        "--disable-progress-bar",
+        action="store_true",
+        help="If set, disable all progress bars.",
     )
 
     parser_plot = parser.add_argument_group("plot arguments")
@@ -484,7 +541,10 @@ if __name__ == "__main__":
         ),
     )
     parser_plot.add_argument(
-        "--kdeplot-levels", default=12, type=int, help="Set the number of contour plot levels."
+        "--kdeplot-levels",
+        default=12,
+        type=int,
+        help="Set the number of contour plot levels.",
     )
     parser_plot.add_argument(
         "--kdeplot-alpha",
@@ -514,7 +574,10 @@ if __name__ == "__main__":
         help="Line style for cluster-keyword arrows. See 'https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html'.",
     )
     parser_plot.add_argument(
-        "--arrow-linewidth", default=2.0, type=float, help="Line width for cluster-keyword arrows."
+        "--arrow-linewidth",
+        default=2.0,
+        type=float,
+        help="Line width for cluster-keyword arrows.",
     )
     parser_plot.add_argument(
         "--keyword-inflate-prop",
@@ -523,26 +586,35 @@ if __name__ == "__main__":
         help="Horizontal figure proportion for which keyword boxes are placed outside the plot axis.",
     )
     parser_plot.add_argument(
-        "--fig-width", default=1024, type=float, help="Set plot figure width. Unit is pixels."
+        "--fig-width",
+        default=1024,
+        type=float,
+        help="Set plot figure width. Unit is pixels.",
     )
     parser_plot.add_argument(
-        "--fig-height", default=768, type=float, help="Set plot figure height. Unit is pixels."
+        "--fig-height",
+        default=768,
+        type=float,
+        help="Set plot figure height. Unit is pixels.",
     )
     parser_plot.add_argument(
-        "--background-color", default="white", type=str, help="Set plot background color."
+        "--background-color",
+        default="white",
+        type=str,
+        help="Set plot background color.",
     )
     parser_plot.add_argument(
         "--do-not-show", action="store_true", help="If set, disable output display."
     )
 
-    parser_sbert = parser.add_argument_group("dbscan arguments")
-    parser_sbert.add_argument(
+    parser_dbscan = parser.add_argument_group("dbscan arguments")
+    parser_dbscan.add_argument(
         "--dbscan-eps",
         default=0.05,
         type=float,
         help="DBSCAN radius size. See 'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'.",
     )
-    parser_sbert.add_argument(
+    parser_dbscan.add_argument(
         "--dbscan-min-samples",
         default=10,
         type=int,
@@ -551,33 +623,49 @@ if __name__ == "__main__":
             "See 'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'."
         ),
     )
-
-    parser_control = parser.add_argument_group("keywords arguments")
-    parser_control.add_argument(
-        "--keywords-per-cluster", default=3, type=int, help="Number of keywords per cluster."
+    parser_dbscan.add_argument(
+        "--n-clusters",
+        default=None,
+        type=int,
+        help=(
+            "If provided, try to match the specified number of clusters by optimizing "
+            "DBSCAN's eps hyperparameter using binary search. In this case, the value "
+            "of parameter 'dbscan-eps' is ignored."
+        ),
     )
-    parser_control.add_argument(
+
+    parser_keywords = parser.add_argument_group("keywords arguments")
+    parser_keywords.add_argument(
+        "--keywords-per-cluster",
+        default=3,
+        type=int,
+        help="Number of keywords per cluster.",
+    )
+    parser_keywords.add_argument(
         "--keyword-sep",
         default="\n",
         type=str,
         help="String used to separate keywords of each cluster.",
     )
-    parser_control.add_argument(
+    parser_keywords.add_argument(
         "--banned-keywords",
         default=None,
         type=str,
         help="List of banned keywords. To provide multiple words, separate by ',' (comma).",
     )
-    parser_control.add_argument(
+    parser_keywords.add_argument(
         "--keyword-minimum-length",
         default=3,
         type=int,
         help="Minimum length (in characters) of keyword candidates.",
     )
-    parser_control.add_argument(
-        "--keyword-font-size", default=10, type=int, help="Font size for displaying keywords."
+    parser_keywords.add_argument(
+        "--keyword-font-size",
+        default=10,
+        type=int,
+        help="Font size for displaying keywords.",
     )
-    parser_control.add_argument(
+    parser_keywords.add_argument(
         "--very-common-tokens-cutoff",
         default=0.01,
         type=float,
@@ -586,7 +674,7 @@ if __name__ == "__main__":
             "cluster keywords. Must be in [0, 1] range."
         ),
     )
-    parser_control.add_argument(
+    parser_keywords.add_argument(
         "--spacy-model-name",
         default="pt_core_news_sm",
         help="Spacy model name to apply lemmatization.",
@@ -600,7 +688,10 @@ if __name__ == "__main__":
         help="Device to embed documents using SBERT. If not provided, will use GPU if possible.",
     )
     parser_sbert.add_argument(
-        "--sbert-batch-size", default=128, type=int, help="SBERT batch size for document embedding."
+        "--sbert-batch-size",
+        default=128,
+        type=int,
+        help="SBERT batch size for document embedding.",
     )
 
     parser_umap = parser.add_argument_group("umap arguments")
@@ -609,6 +700,12 @@ if __name__ == "__main__":
     )
 
     parser_corpus = parser.add_argument_group("corpus arguments")
+    parser_corpus.add_argument(
+        "--max-chars-per-instance",
+        default=None,
+        type=int,
+        help="If set, truncate every instance up to the specified amount of characters.",
+    )
     parser_corpus.add_argument(
         "--corpus-file-sep",
         default=",",
@@ -662,7 +759,10 @@ if __name__ == "__main__":
         ),
     )
     parser_seaborn.add_argument(
-        "--seaborn-font-scale", default=1.0, type=float, help="Set seaborn font scaling factor."
+        "--seaborn-font-scale",
+        default=1.0,
+        type=float,
+        help="Set seaborn font scaling factor.",
     )
 
     args = parser.parse_args()
