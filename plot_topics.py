@@ -529,6 +529,9 @@ if __name__ == "__main__":
         "--fig-height", default=768, type=float, help="Set plot figure height. Unit is pixels."
     )
     parser_plot.add_argument(
+        "--background-color", default="white", type=str, help="Set plot background color."
+    )
+    parser_plot.add_argument(
         "--do-not-show", action="store_true", help="If set, disable output display."
     )
 
@@ -684,5 +687,7 @@ if __name__ == "__main__":
         palette="colorblind",
         font_scale=args.seaborn_font_scale,
     )
+
+    sns.set(rc={"axes.facecolor": args.background_color})
 
     run(args)
