@@ -51,7 +51,7 @@ def sample_items_(items: list[str], /, source_sample_factor: float | int | None)
 
     random.shuffle(items)
     n = int(
-        source_sample_factor if source_sample_factor >= 1.0 else source_sample_factor * len(items)
+        source_sample_factor if source_sample_factor >= 1.0 else (source_sample_factor * len(items))
     )
     n = max(1, n)
     return items[:n]
@@ -67,11 +67,14 @@ def read_corpus(
 ) -> list[str]:
     texts: list[str] = []
 
+    for curi in corpus_uris:
+        if not os.path.exists(curi):
+            raise FileNotFoundError(curi)
+
     if sample_random_state is not None:
         random.seed(sample_random_state)
 
     for curi in corpus_uris:
-        cur_texts: list[str] = []
         print_prefix: str = f"({curi}) {'Read' if source_sample_factor is None else 'Sampled'} "
 
         if os.path.isdir(curi):
@@ -80,18 +83,18 @@ def read_corpus(
 
             print(f"{print_prefix}{len(furis)} files with '.{file_ext}' extension.")
 
+            cur_texts: list[str] = []
             for furi in furis:
                 with open(furi, "r", encoding="utf-8") as f_in:
                     cur_texts.append(f_in.read())
 
         else:
-            df: list[t.Any]
-            df = pd.read_csv(curi, usecols=keep_index, sep=sep).squeeze().tolist()
-            df = sample_items_(df, source_sample_factor=source_sample_factor)
-
+            cur_texts = (
+                pd.read_csv(curi, usecols=[keep_index], sep=sep, index_col=False).squeeze().tolist()
+            )
+            cur_texts = sample_items_(cur_texts, source_sample_factor=source_sample_factor)
+            cur_texts = [str(item) for item in cur_texts if item]
             print(f"{print_prefix}{len(cur_texts)} non-empty items from corpus.")
-
-            cur_texts.extend([str(item) for item in cur_texts if item])
 
         texts.extend(cur_texts)
 
@@ -255,7 +258,7 @@ def plot_base(
         style=cluster_ids,
         ax=ax,
         legend=False,
-        palette="hsv_r" if cluster_ids is not None else None,
+        palette=args.scatterplot_palette if cluster_ids is not None else None,
         linewidth=0,
     )
 
@@ -611,6 +614,7 @@ if __name__ == "__main__":
     parser_corpus.add_argument(
         "--corpus-file-col-index",
         default=0,
+        type=int,
         help="Column index to keep when reading corpus from a single file.",
     )
     parser_corpus.add_argument(
@@ -624,8 +628,10 @@ if __name__ == "__main__":
         type=float,
         help=(
             "If provided, set the sample factor for each corpus source. "
-            "Can be either a float in range [0, 1) (sample by proportion), "
-            "or an integer >= 1 (sample maximum size)."
+            "Each source is sampled independently. For instance, if you provide N "
+            "data sources with a sample factor of M, you'll end up with at most N * M samples. "
+            "Can be either a float in range [0, 1) (sample by proportion of total instances), "
+            "or an integer >= 1 (sets sample maximum size)."
         ),
     )
     parser_corpus.add_argument(
