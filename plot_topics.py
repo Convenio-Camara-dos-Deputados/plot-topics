@@ -1,3 +1,4 @@
+"""Plot topic keywords from semantic embedding clusters."""
 import typing as t
 import collections
 import functools
@@ -7,18 +8,17 @@ import hashlib
 import random
 import string
 import glob
-import sys
 import os
 import re
 
 import matplotlib.pyplot as plt
 import sentence_transformers
+import numpy as np
 import numpy.typing as npt
 import sklearn.cluster
 import seaborn as sns
 import scipy.spatial
 import pandas as pd
-import numpy as np
 import colorama
 import spacy
 import nltk
@@ -114,7 +114,7 @@ def cluster_embs(
     clusters = clusters[clusters >= 0]
 
     n_clusters = clusters.size + 1
-    print(f"Number of clusters:", n_clusters)
+    print("Number of clusters:", n_clusters)
 
     if n_clusters == 1:
         raise ValueError(
@@ -269,11 +269,9 @@ def plot_base(
 
 
 def plot_keywords(
-    fig,
     ax,
-    embs: npt.NDArray[np.float64],
     medoids: npt.NDArray[np.float64],
-    cluster_keywords: dict[str, list[str]],
+    cluster_keywords: dict[int, list[str]],
     args,
 ) -> None:
     xytextcoords = np.empty((len(medoids), 2), dtype=float)
@@ -317,7 +315,7 @@ def plot_keywords(
             cur_arrowprops["connectionstyle"] = "arc3,rad=-0.25"
 
         ax.annotate(
-            "\n".join(cluster_keywords[i]),
+            args.keyword_sep.join(cluster_keywords[i]),
             xy=tuple(medoid),
             xytext=tuple(xytext),
             fontsize=args.keyword_font_size,
@@ -364,7 +362,8 @@ def run(args) -> None:
             very_common_tokens = set(f_in.read().split("\n"))
 
         print(
-            f"{colorama.Fore.YELLOW}Found cached '{very_common_tokens_uri}'.{colorama.Style.RESET_ALL}"
+            f"{colorama.Fore.YELLOW}Found cached '{very_common_tokens_uri}'."
+            f"{colorama.Style.RESET_ALL}"
         )
 
     else:
@@ -379,7 +378,7 @@ def run(args) -> None:
             )
         )
 
-        with open(very_common_tokens_uri, "w") as f_out:
+        with open(very_common_tokens_uri, "w", encoding="utf-8") as f_out:
             f_out.write("\n".join(sorted(very_common_tokens)))
 
     embs = (embs - embs.min(axis=0)) / np.ptp(embs, axis=0)
@@ -414,9 +413,7 @@ def run(args) -> None:
     )
 
     plot_keywords(
-        fig=fig,
         ax=ax,
-        embs=embs,
         medoids=medoids,
         cluster_keywords=cluster_keywords,
         args=args,
@@ -460,6 +457,7 @@ if __name__ == "__main__":
 
     parser_control = parser.add_argument_group("keywords arguments")
     parser_control.add_argument("--keywords-per-cluster", default=3, type=int)
+    parser_control.add_argument("--keyword-sep", default="\n", type=str)
     parser_control.add_argument("--banned-tokens", default=None, type=str)
     parser_control.add_argument("--keyword-minimum-length", default=3, type=int)
     parser_control.add_argument("--keyword-font-size", default=10, type=int)
@@ -496,7 +494,7 @@ if __name__ == "__main__":
         spacy.load(args.spacy_model_name)
 
     except OSError:
-        import spacy.cli
+        import spacy.cli  # pylint: disable="ungrouped-imports"
 
         spacy.cli.download(args.spacy_model_name)
 
