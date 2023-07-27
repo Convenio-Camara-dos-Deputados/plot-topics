@@ -66,6 +66,7 @@ def read_corpus(
     sample_random_state: int | None,
     max_chars_per_instance: int | None,
 ) -> list[str]:
+    corpus_uris = [item.strip('"').rstrip("/") for item in corpus_uris]
     texts: list[str] = []
 
     for curi in corpus_uris:
@@ -91,6 +92,12 @@ def read_corpus(
             for furi in furis:
                 with open(furi, "r", encoding="utf-8") as f_in:
                     cur_texts.append(f_in.read(max_chars_per_instance))
+
+        elif curi.endswith(".txt"):
+            with open(curi, "r", encoding="utf-8") as f_in:
+                cur_texts = [f_in.read(max_chars_per_instance)]
+
+            print(f"({curi}) Read '.txt' file.")
 
         else:
             cur_texts = (
@@ -427,7 +434,7 @@ def run(args) -> None:
         with open(very_common_tokens_uri, "w", encoding="utf-8") as f_out:
             f_out.write("\n".join(sorted(very_common_tokens)))
 
-    embs = (embs - embs.min(axis=0)) / np.ptp(embs, axis=0)
+    embs = (embs - embs.min(axis=0)) / (1e-12 + np.ptp(embs, axis=0))
 
     inches_to_pixels = 1.0 / plt.rcParams["figure.dpi"]
     fig, ax = plt.subplots(

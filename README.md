@@ -62,7 +62,9 @@ python plot_topics.py /path/to/sbert /path/to/data/source1 /path/to/data/source2
 Each `/path/to/data/source` can be either a directory or a single file.
 
 - *If it is a directory*, this script will search **recursively** every file with extension specified by `--corpus-dir-ext` (default is `txt`); or
-- *If it is a single file*, this script will read it using [Pandas](https://pandas.pydata.org/docs/reference/api/pandas.read_csv.html) as follows: `pd.read_csv(/path/to/data/source, sep=corpus-file-sep, usecols=[corpus-file-col-index], index_col=False).squeeze()`. Note that this implies that a single column is read per file.
+- *If it is a single file*...
+   - *and if it has .txt extension*: this script will simply read it;
+   - *Otherwise*: this script will read it using [Pandas](https://pandas.pydata.org/docs/reference/api/pandas.read_csv.html) as follows: `pd.read_csv(/path/to/data/source, sep=corpus-file-sep, usecols=[corpus-file-col-index], index_col=False).squeeze()`. Note that this implies that a single column is read per file.
 
 You can access the documentation (which includes more configuration options) by running:
 ```bash
