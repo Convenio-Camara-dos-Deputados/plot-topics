@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import sentence_transformers
 import numpy as np
 import numpy.typing as npt
+import sklearn.preprocessing
 import sklearn.cluster
 import seaborn as sns
 import scipy.spatial
@@ -317,23 +318,60 @@ def plot_base(
     sns.despine(fig=fig, ax=ax, top=True, right=True, left=True, bottom=True)
 
 
+def build_rotation_matrix(degrees: float) -> npt.NDArray[np.float64]:
+    radians = degrees / 360 * 2 * np.pi
+    cos, sin = float(np.cos(radians)), float(np.sin(radians))
+    rot_matrix = np.array([[cos, -sin], [sin, cos]], dtype=float)
+    return rot_matrix
+
+
+def rotate_embeddings(
+    embs: npt.NDArray[np.float64],
+    medoids: npt.NDArray[np.float64],
+    acceptable_unbalance: float = 0.05,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    degrees_cand = np.arange(0, 90 + 1, 5)
+    unbalances = np.full(degrees_cand.size, fill_value=np.inf, dtype=float)
+
+    for i, degrees in enumerate(degrees_cand):
+        rot_mat = build_rotation_matrix(degrees)
+        rot_medoids = medoids @ rot_mat
+        unbalances[i] = right_side_prop = float(np.mean(rot_medoids[:, 0] >= 0.0))
+        is_acceptable = abs(right_side_prop - 0.50) <= acceptable_unbalance
+        if is_acceptable:
+            break
+
+    unbalances = np.abs(unbalances - 0.50)
+    best_angle = degrees_cand[np.argmin(unbalances)]
+
+    if best_angle > 0:
+        rot_mat = build_rotation_matrix(best_angle)
+        embs = embs @ rot_mat
+        medoids = medoids @ rot_mat
+        print(f"Rotated embeddings {best_angle} degrees to optimize keyword box placement.")
+
+    return embs, medoids
+
+
 def plot_keywords(
     ax,
     medoids: npt.NDArray[np.float64],
     cluster_keywords: dict[int, list[str]],
     args,
 ) -> None:
-    xytextcoords = np.empty((len(medoids), 2), dtype=float)
-    xytextcoords[:, 0] = medoids[:, 0] >= 0.5 * np.add(*ax.get_xlim())
+    textcoord_x = medoids[:, 0] >= 0.5 * float(np.add(*ax.get_xlim()))
+    textcoord_y = np.empty(len(medoids), dtype=float)
 
-    for disc in [False, True]:
-        cur_inds = np.flatnonzero(xytextcoords[:, 0] == disc)
+    for is_after_midway_x in [False, True]:
+        cur_inds = np.flatnonzero(textcoord_x == is_after_midway_x)
         coord_ids = np.argsort(np.argsort(medoids[cur_inds, 1]))
         frac_space = np.linspace(-0.025, 0.975, len(cur_inds))
-        xytextcoords[cur_inds, 1] = frac_space[coord_ids]
+        textcoord_y[cur_inds] = frac_space[coord_ids]
 
     min_, max_ = -args.keyword_inflate_prop, (1.0 + args.keyword_inflate_prop)
-    xytextcoords[:, 0] = xytextcoords[:, 0] * (max_ - min_) + min_
+    textcoord_x = textcoord_x.astype(float) * (max_ - min_) + min_
+
+    xytextcoords = np.vstack((textcoord_x, textcoord_y), dtype=float).T
 
     arrowprops = {
         "arrowstyle": "->",
@@ -434,7 +472,8 @@ def run(args) -> None:
         with open(very_common_tokens_uri, "w", encoding="utf-8") as f_out:
             f_out.write("\n".join(sorted(very_common_tokens)))
 
-    embs = (embs - embs.min(axis=0)) / (1e-12 + np.ptp(embs, axis=0))
+    scaler = sklearn.preprocessing.MinMaxScaler(feature_range=(-1.0, 1.0))
+    embs = scaler.fit_transform(embs)
 
     inches_to_pixels = 1.0 / plt.rcParams["figure.dpi"]
     fig, ax = plt.subplots(
@@ -457,6 +496,8 @@ def run(args) -> None:
         plot_base(fig=fig, ax=ax, embs=embs, cluster_ids=None, args=args, remove_labels=False)
         plt.show()
         raise ValueError from err
+
+    embs, medoids = rotate_embeddings(embs=embs, medoids=medoids)
 
     plot_base(
         fig=fig,
