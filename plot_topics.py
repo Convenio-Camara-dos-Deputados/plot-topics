@@ -375,7 +375,7 @@ def plot_keywords(
 
     arrowprops = {
         "arrowstyle": "->",
-        "connectionstyle": "arc3,rad=0.25",
+        "connectionstyle": f"arc3,rad={args.arrow_rad}",
         "edgecolor": args.arrow_color,
         "alpha": args.arrow_alpha,
         "linestyle": args.arrow_linestyle,
@@ -399,7 +399,7 @@ def plot_keywords(
 
         if (cx >= mid_x and cy <= mid_y) or (cx <= mid_x and cy >= mid_y):
             cur_arrowprops = arrowprops.copy()
-            cur_arrowprops["connectionstyle"] = "arc3,rad=-0.25"
+            cur_arrowprops["connectionstyle"] = f"arc3,rad=-{args.arrow_rad}"
 
         ax.annotate(
             args.keyword_sep.join(cluster_keywords[i]),
@@ -626,6 +626,12 @@ if __name__ == "__main__":
         default=2.0,
         type=float,
         help="Line width for cluster-keyword arrows.",
+    )
+    parser_plot.add_argument(
+        "--arrow-rad",
+        default=0.20,
+        type=float,
+        help="Set cluster-keyword arrow curvature. If 0.0, connections will be straight lines.",
     )
     parser_plot.add_argument(
         "--keyword-inflate-prop",
