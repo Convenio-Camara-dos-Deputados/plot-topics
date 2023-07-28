@@ -375,7 +375,6 @@ def plot_keywords(
 
     arrowprops = {
         "arrowstyle": "->",
-        "connectionstyle": f"arc3,rad={args.arrow_rad}",
         "edgecolor": args.arrow_color,
         "alpha": args.arrow_alpha,
         "linestyle": args.arrow_linestyle,
@@ -391,15 +390,16 @@ def plot_keywords(
     }
 
     mid_x = 0.50 * float(np.add(*ax.get_xlim()))
-    mid_y = 0.50 * float(np.add(*ax.get_ylim()))
+    mid_y, max_y = np.quantile(ax.get_ylim(), (0.5, 1.0))
 
     for i, (medoid, xytext) in enumerate(zip(medoids, xytextcoords)):
-        cur_arrowprops = arrowprops
         cx, cy = medoid
 
-        if (cx >= mid_x and cy <= mid_y) or (cx <= mid_x and cy >= mid_y):
-            cur_arrowprops = arrowprops.copy()
-            cur_arrowprops["connectionstyle"] = f"arc3,rad=-{args.arrow_rad}"
+        cur_arrowprops = arrowprops.copy()
+        curvature = args.arrow_rad * (cy - mid_y) / (max_y - mid_y)
+        if cx <= mid_x:
+            curvature *= -1.0
+        cur_arrowprops["connectionstyle"] = f"arc3,rad={curvature}"
 
         ax.annotate(
             args.keyword_sep.join(cluster_keywords[i]),
@@ -629,9 +629,12 @@ if __name__ == "__main__":
     )
     parser_plot.add_argument(
         "--arrow-rad",
-        default=0.20,
+        default=0.30,
         type=float,
-        help="Set cluster-keyword arrow curvature. If 0.0, connections will be straight lines.",
+        help=(
+            "Set cluster-keyword arrow maximum curvature. "
+            "If 0.0, connections will be straight lines."
+        ),
     )
     parser_plot.add_argument(
         "--keyword-inflate-prop",
