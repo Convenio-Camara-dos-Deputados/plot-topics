@@ -46,14 +46,12 @@ STOPWORDS = frozenset(nltk.corpus.stopwords.words("portuguese"))
 REG_WHITESPACE_SPAN = re.compile(r"\s+")
 
 
-def sample_items_(items: list[str], /, source_sample_factor: float | int | None) -> list[str]:
-    if source_sample_factor is None:
+def sample_items_(items: list[str], /, source_sample_size: float | int | None) -> list[str]:
+    if source_sample_size is None:
         return items
 
     random.shuffle(items)
-    n = int(
-        source_sample_factor if source_sample_factor >= 1.0 else (source_sample_factor * len(items))
-    )
+    n = int(source_sample_size if source_sample_size >= 1.0 else (source_sample_size * len(items)))
     n = max(1, n)
     return items[:n]
 
@@ -63,7 +61,7 @@ def read_corpus(
     sep: str,
     file_ext: str,
     keep_index: int,
-    source_sample_factor: int | float | None,
+    source_sample_size: int | float | None,
     sample_random_state: int | None,
     max_chars_per_instance: int | None,
 ) -> list[str]:
@@ -81,11 +79,11 @@ def read_corpus(
         max_chars_per_instance = -1
 
     for curi in corpus_uris:
-        print_prefix: str = f"({curi}) {'Read' if source_sample_factor is None else 'Sampled'} "
+        print_prefix: str = f"({curi}) {'Read' if source_sample_size is None else 'Sampled'} "
 
         if os.path.isdir(curi):
             furis = glob.glob(os.path.join(curi, f"**/*.{file_ext}"), recursive=True)
-            furis = sample_items_(furis, source_sample_factor=source_sample_factor)
+            furis = sample_items_(furis, source_sample_size=source_sample_size)
 
             print(f"{print_prefix}{len(furis)} files with '.{file_ext}' extension.")
 
@@ -104,7 +102,7 @@ def read_corpus(
             cur_texts = (
                 pd.read_csv(curi, usecols=[keep_index], sep=sep, index_col=False).squeeze().tolist()
             )
-            cur_texts = sample_items_(cur_texts, source_sample_factor=source_sample_factor)
+            cur_texts = sample_items_(cur_texts, source_sample_size=source_sample_size)
             cur_texts = [str(item) for item in cur_texts if item]
 
             if max_chars_per_instance > 0:
@@ -420,7 +418,7 @@ def run(args) -> None:
         sep=args.corpus_file_sep,
         keep_index=args.corpus_file_col_index,
         file_ext=args.corpus_dir_ext,
-        source_sample_factor=args.source_sample_factor,
+        source_sample_size=args.source_sample_size,
         sample_random_state=args.sample_random_state,
         max_chars_per_instance=args.max_chars_per_instance,
     )
@@ -508,7 +506,11 @@ def run(args) -> None:
         remove_labels=True,
     )
 
-    user_banned_tokens = set(args.banned_keywords.split(",")) if args.banned_keywords else set()
+    user_banned_tokens: str[str] = (
+        {item.strip() for item in args.banned_keywords.split(",")}
+        if args.banned_keywords
+        else set()
+    )
 
     if user_banned_tokens:
         print(f"Found {len(user_banned_tokens)} custom banned tokens.")
@@ -603,7 +605,10 @@ if __name__ == "__main__":
     parser_plot.add_argument(
         "--kdeplot-cmap",
         default="viridis",
-        help="Matplotlib color map for contour plot. See 'https://matplotlib.org/stable/tutorials/colors/colormaps.html'.",
+        help=(
+            "Matplotlib color map for contour plot. "
+            "See 'https://matplotlib.org/stable/tutorials/colors/colormaps.html'."
+        ),
     )
     parser_plot.add_argument(
         "--arrow-color",
@@ -619,7 +624,10 @@ if __name__ == "__main__":
     parser_plot.add_argument(
         "--arrow-linestyle",
         default="dashed",
-        help="Line style for cluster-keyword arrows. See 'https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html'.",
+        help=(
+            "Line style for cluster-keyword arrows. See "
+            "'https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html'."
+        ),
     )
     parser_plot.add_argument(
         "--arrow-linewidth",
@@ -640,7 +648,9 @@ if __name__ == "__main__":
         "--keyword-inflate-prop",
         default=0.05,
         type=float,
-        help="Horizontal figure proportion for which keyword boxes are placed outside the plot axis.",
+        help=(
+            "Horizontal figure proportion for which keyword boxes are placed outside the plot axis."
+        ),
     )
     parser_plot.add_argument(
         "--fig-width",
@@ -669,7 +679,10 @@ if __name__ == "__main__":
         "--dbscan-eps",
         default=0.05,
         type=float,
-        help="DBSCAN radius size. See 'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'.",
+        help=(
+            "DBSCAN radius size. See "
+            "'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'."
+        ),
     )
     parser_dbscan.add_argument(
         "--dbscan-min-samples",
@@ -780,14 +793,14 @@ if __name__ == "__main__":
         help="File extension to find files when reading corpus from a directory hierarchy.",
     )
     parser_corpus.add_argument(
-        "--source-sample-factor",
+        "--source-sample-size",
         default=None,
         type=float,
         help=(
-            "If provided, set the sample factor for each corpus source. "
+            "If provided, set the sample size for each corpus source. "
             "Each source is sampled independently. For instance, if you provide N "
-            "data sources with a sample factor of M, you'll end up with at most N * M samples. "
-            "Can be either a float in range [0, 1) (sample by proportion of total instances), "
+            "data sources with a sample size of M, you'll end up with at most N * M samples. "
+            "Can be either a float in range [0, 1) (sample proportionally source size), "
             "or an integer >= 1 (sets sample maximum size)."
         ),
     )
