@@ -132,7 +132,9 @@ def cluster_embs(
         clusters = np.unique(cluster_ids)
 
     else:
-        eps_min, eps_max = 0.0, 0.71
+        eps_min = 0.0
+        eps_max = float(np.max(np.ptp(embs, axis=0)) * 0.50 * np.sqrt(2))
+
         dbscan_kwargs_copy = dbscan_kwargs.copy()
 
         for i in range(1, 1 + 50):
