@@ -27,13 +27,13 @@ To use this script, you need to provide two required parameters:
 - At least one text source path.
 
 ```bash
-python plot_topics.py /path/to/sbert /path/to/data/source1 /path/to/data/source2 ...
+python run.py /path/to/sbert /path/to/data/source1 /path/to/data/source2 ...
 ```
 
 However, you will likely need to specific some parameters that control the quality of your plot plot, in particular the DBSCAN hyperparameters.
 A typical run will look like this:
 ```bash
-python plot_topics.py /path/to/sbert /path/to/data/source1 /path/to/data/source2 ... \
+python run.py /path/to/sbert /path/to/data/source1 /path/to/data/source2 ... \
   --output="output.pdf" \
   --dbscan-eps=0.10 \
   --dbscan-min-samples=10 \
@@ -45,7 +45,7 @@ python plot_topics.py /path/to/sbert /path/to/data/source1 /path/to/data/source2
 
 Some settings associated with loading data may also be required:
 ```bash
-python plot_topics.py /path/to/sbert /path/to/data/source1 /path/to/data/source2 ... \
+python run.py /path/to/sbert /path/to/data/source1 /path/to/data/source2 ... \
   --output="output.pdf" \
   --dbscan-eps=0.10 \
   --dbscan-min-samples=10 \
@@ -68,5 +68,5 @@ Each `/path/to/data/source` can be either a directory or a single file.
 
 You can access the documentation (which includes more configuration options) by running:
 ```bash
-python plot_topics.py --help
+python run.py --help
 ```

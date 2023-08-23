@@ -25,6 +25,8 @@ import spacy
 import nltk
 import tqdm
 
+from . import rslp_s
+
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
@@ -183,13 +185,19 @@ def cluster_embs(
     return cluster_ids, medoids
 
 
-def build_cache_uri(resource_name: str, args, /) -> str:
+def build_cache_uri(
+    resource_name: str, args, /, *, additional_info: t.Sequence[str] | None = None
+) -> str:
     corpus_urns = [os.path.basename(item.rstrip("/")) for item in args.corpus_uris]
     corpus_urns.sort()
 
     hasher = hashlib.sha256()
     for urn in corpus_urns:
         hasher.update(urn.encode())
+
+    if additional_info:
+        for item in additional_info:
+            hasher.update(item.encode())
 
     corpus_urns_sha256 = hasher.hexdigest()
 
@@ -204,6 +212,8 @@ def compute_very_common_tokens(
     cutoff: int | float,
     minimum_length: int,
     banned_tokens: set[str] | None,
+    enable_plural_stemmer: bool,
+    do_not_stem_keywords: set[str],
     disable_progress_bar: bool,
 ) -> list[str]:
     spacy_model = spacy.load(spacy_model_name)
@@ -225,17 +235,23 @@ def compute_very_common_tokens(
 
     for doc in tqdm.tqdm(texts, desc="Computing very common tokens", disable=disable_progress_bar):
         doc = fn_preproc(doc)
-        lemmas = [token.lemma_ for token in fn_spacy_model(doc)]
+        lemmas: list[str] = [token.lemma_ for token in fn_spacy_model(doc)]
+
+        if enable_plural_stemmer:
+            lemmas = [
+                rslp_s.stem(item) if item not in do_not_stem_keywords else item for item in lemmas
+            ]
+
         token_freqs.update(lemmas)
 
     token_freqs_clean = collections.Counter(
         {
             k: v
             for k, v in token_freqs.items()
-            if k not in STOPWORDS
+            if len(k) >= minimum_length
+            and k not in STOPWORDS
             and k not in banned_tokens
             and k not in string.punctuation
-            and len(k) >= minimum_length
         }
     )
 
@@ -254,6 +270,8 @@ def compute_cluster_keywords(
     banned_tokens: set[str],
     minimum_length: int,
     keywords_per_cluster: int,
+    enable_plural_stemmer: bool,
+    do_not_stem_keywords: set[str],
     disable_progress_bar: bool,
 ) -> dict[int, list[str]]:
     keywords: dict[int, list[str]] = {}
@@ -271,6 +289,8 @@ def compute_cluster_keywords(
             cutoff=keywords_per_cluster,
             minimum_length=minimum_length,
             banned_tokens=banned_tokens,
+            enable_plural_stemmer=enable_plural_stemmer,
+            do_not_stem_keywords=do_not_stem_keywords,
             disable_progress_bar=True,
         )
 
@@ -333,9 +353,23 @@ def rotate_embeddings(
     degrees_cand = np.arange(0, 90 + 1, 5)
     unbalances = np.full(degrees_cand.size, fill_value=np.inf, dtype=float)
 
-    for i, degrees in enumerate(degrees_cand):
+    def fn(
+        embs: npt.NDArray[np.float64], medoids: npt.NDArray[np.float64], degrees: float
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         rot_mat = build_rotation_matrix(degrees)
+
+        rot_embs = embs @ rot_mat
         rot_medoids = medoids @ rot_mat
+
+        rot_embs_median = np.median(rot_embs, axis=0)
+
+        rot_embs -= rot_embs_median
+        rot_medoids -= rot_embs_median
+
+        return rot_embs, rot_medoids
+
+    for i, degrees in enumerate(degrees_cand):
+        _, rot_medoids = fn(embs=embs, medoids=medoids, degrees=degrees)
         unbalances[i] = right_side_prop = float(np.mean(rot_medoids[:, 0] >= 0.0))
         is_acceptable = abs(right_side_prop - 0.50) <= acceptable_unbalance
         if is_acceptable:
@@ -345,9 +379,7 @@ def rotate_embeddings(
     best_angle = degrees_cand[np.argmin(unbalances)]
 
     if best_angle > 0:
-        rot_mat = build_rotation_matrix(best_angle)
-        embs = embs @ rot_mat
-        medoids = medoids @ rot_mat
+        embs, medoids = fn(embs=embs, medoids=medoids, degrees=best_angle)
         print(f"Rotated embeddings {best_angle} degrees to optimize keyword box placement.")
 
     return embs, medoids
@@ -359,7 +391,9 @@ def plot_keywords(
     cluster_keywords: dict[int, list[str]],
     args,
 ) -> None:
-    textcoord_x = medoids[:, 0] >= 0.5 * float(np.add(*ax.get_xlim()))
+    mid_x = 0
+
+    textcoord_x = medoids[:, 0] >= mid_x
     textcoord_y = np.empty(len(medoids), dtype=float)
 
     for is_after_midway_x in [False, True]:
@@ -389,7 +423,6 @@ def plot_keywords(
         "alpha": 1.0,
     }
 
-    mid_x = 0.50 * float(np.add(*ax.get_xlim()))
     mid_y, max_y = np.quantile(ax.get_ylim(), (0.5, 1.0))
 
     for i, (medoid, xytext) in enumerate(zip(medoids, xytextcoords)):
@@ -414,7 +447,7 @@ def plot_keywords(
         )
 
 
-def run(args) -> None:
+def plot(args) -> None:
     texts = read_corpus(
         corpus_uris=args.corpus_uris,
         sep=args.corpus_file_sep,
@@ -426,7 +459,17 @@ def run(args) -> None:
     )
 
     embs_uri = build_cache_uri("embs", args)
-    very_common_tokens_uri = build_cache_uri("very_common_tokens", args)
+
+    very_common_tokens_uri = build_cache_uri(
+        "very_common_tokens",
+        args,
+        additional_info=[
+            f"vctc_{args.very_common_tokens_cutoff:.4f}",
+            f"eps_{args.enable_plural_stemmer}",
+            f"smn_{args.spacy_model_name}",
+            f"dnskw_{args.do_not_stem_keywords}",
+        ],
+    )
 
     if not args.ignore_cache and os.path.exists(embs_uri):
         embs = np.load(embs_uri)
@@ -448,6 +491,12 @@ def run(args) -> None:
 
         np.save(embs_uri, embs)
 
+    do_not_stem_keywords: str[str] = (
+        {item.strip() for item in args.do_not_stem_keywords.split(",")}
+        if args.do_not_stem_keywords
+        else set()
+    )
+
     if not args.ignore_cache and os.path.exists(very_common_tokens_uri):
         with open(very_common_tokens_uri, "r", encoding="utf-8") as f_in:
             very_common_tokens = set(f_in.read().split("\n"))
@@ -464,6 +513,8 @@ def run(args) -> None:
                 spacy_model_name=args.spacy_model_name,
                 cutoff=args.very_common_tokens_cutoff,
                 disable_progress_bar=args.disable_progress_bar,
+                enable_plural_stemmer=args.enable_plural_stemmer,
+                do_not_stem_keywords=do_not_stem_keywords,
                 banned_tokens=None,
                 minimum_length=1,
             )
@@ -474,8 +525,9 @@ def run(args) -> None:
 
     scaler = sklearn.preprocessing.MinMaxScaler(feature_range=(-1.0, 1.0))
     embs = scaler.fit_transform(embs)
+    embs -= np.median(embs, axis=0)
 
-    inches_to_pixels = 1.0 / plt.rcParams["figure.dpi"]
+    inches_to_pixels = 1.0 / float(plt.rcParams["figure.dpi"])
     fig, ax = plt.subplots(
         1,
         figsize=(args.fig_width * inches_to_pixels, args.fig_height * inches_to_pixels),
@@ -524,6 +576,8 @@ def run(args) -> None:
         keywords_per_cluster=args.keywords_per_cluster,
         banned_tokens=very_common_tokens | user_banned_tokens,
         minimum_length=args.keyword_minimum_length,
+        enable_plural_stemmer=args.enable_plural_stemmer,
+        do_not_stem_keywords=do_not_stem_keywords,
         disable_progress_bar=args.disable_progress_bar,
     )
 
@@ -540,326 +594,3 @@ def run(args) -> None:
     if args.output:
         fig.savefig(args.output, bbox_inches=0)
         print(f"Saved plot as '{args.output}'.")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-    parser.add_argument(
-        "sbert_uri", help="Path to the Sentence Transformer used to embed documents."
-    )
-    parser.add_argument(
-        "corpus_uris",
-        action="extend",
-        nargs="+",
-        type=str,
-        help="One or more paths to copora files.",
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        default="output.pdf",
-        help="Output file URI. Setting to blank disables saving the output file.",
-    )
-    parser.add_argument(
-        "--cache-dir",
-        default="./cache",
-        help="Directory to cache embeddings and very common words.",
-    )
-    parser.add_argument(
-        "--ignore-cache",
-        action="store_true",
-        help="If set, force recomputation of any cached value.",
-    )
-    parser.add_argument(
-        "--disable-progress-bar",
-        action="store_true",
-        help="If set, disable all progress bars.",
-    )
-
-    parser_plot = parser.add_argument_group("plot arguments")
-    parser_plot.add_argument(
-        "--scatterplot-palette",
-        default="hsv",
-        help="Matplotlib pallete color for scatter plot. See 'https://matplotlib.org/stable/tutorials/colors/colormaps.html'.",
-    )
-    parser_plot.add_argument(
-        "--kdeplot-thresh",
-        default=1e-3,
-        type=float,
-        help=(
-            "KDE plot threshold to set the lowest contour plot level drawn. "
-            "See 'https://seaborn.pydata.org/generated/seaborn.kdeplot.html'."
-        ),
-    )
-    parser_plot.add_argument(
-        "--kdeplot-levels",
-        default=12,
-        type=int,
-        help="Set the number of contour plot levels.",
-    )
-    parser_plot.add_argument(
-        "--kdeplot-alpha",
-        default=1.0,
-        type=float,
-        help="Set the transparency level to contour plot. Must be in [0, 1] range.",
-    )
-    parser_plot.add_argument(
-        "--kdeplot-cmap",
-        default="viridis",
-        help=(
-            "Matplotlib color map for contour plot. "
-            "See 'https://matplotlib.org/stable/tutorials/colors/colormaps.html'."
-        ),
-    )
-    parser_plot.add_argument(
-        "--arrow-color",
-        default="black",
-        help="Color for arrows connecting cluster and their keyword boxes.",
-    )
-    parser_plot.add_argument(
-        "--arrow-alpha",
-        default=0.80,
-        type=float,
-        help="Transparency level for cluster-keyword arrows. Must be in [0, 1] range.",
-    )
-    parser_plot.add_argument(
-        "--arrow-linestyle",
-        default="dashed",
-        help=(
-            "Line style for cluster-keyword arrows. See "
-            "'https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html'."
-        ),
-    )
-    parser_plot.add_argument(
-        "--arrow-linewidth",
-        default=2.0,
-        type=float,
-        help="Line width for cluster-keyword arrows.",
-    )
-    parser_plot.add_argument(
-        "--arrow-rad",
-        default=0.30,
-        type=float,
-        help=(
-            "Set cluster-keyword arrow maximum curvature. "
-            "If 0.0, connections will be straight lines."
-        ),
-    )
-    parser_plot.add_argument(
-        "--keyword-inflate-prop",
-        default=0.05,
-        type=float,
-        help=(
-            "Horizontal figure proportion for which keyword boxes are placed outside the plot axis."
-        ),
-    )
-    parser_plot.add_argument(
-        "--fig-width",
-        default=1024,
-        type=float,
-        help="Set plot figure width. Unit is pixels.",
-    )
-    parser_plot.add_argument(
-        "--fig-height",
-        default=768,
-        type=float,
-        help="Set plot figure height. Unit is pixels.",
-    )
-    parser_plot.add_argument(
-        "--background-color",
-        default="white",
-        type=str,
-        help="Set plot background color.",
-    )
-    parser_plot.add_argument(
-        "--do-not-show", action="store_true", help="If set, disable output display."
-    )
-
-    parser_dbscan = parser.add_argument_group("dbscan arguments")
-    parser_dbscan.add_argument(
-        "--dbscan-eps",
-        default=0.05,
-        type=float,
-        help=(
-            "DBSCAN radius size. See "
-            "'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'."
-        ),
-    )
-    parser_dbscan.add_argument(
-        "--dbscan-min-samples",
-        default=10,
-        type=int,
-        help=(
-            "DBSCAN minimum number of connected points for core points. "
-            "See 'https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html'."
-        ),
-    )
-    parser_dbscan.add_argument(
-        "--n-clusters",
-        default=None,
-        type=int,
-        help=(
-            "If provided, try to match the specified number of clusters by optimizing "
-            "DBSCAN's eps hyperparameter using binary search. In this case, the value "
-            "of parameter 'dbscan-eps' is ignored."
-        ),
-    )
-
-    parser_keywords = parser.add_argument_group("keywords arguments")
-    parser_keywords.add_argument(
-        "--keywords-per-cluster",
-        default=3,
-        type=int,
-        help="Number of keywords per cluster.",
-    )
-    parser_keywords.add_argument(
-        "--keyword-sep",
-        default="\n",
-        type=str,
-        help="String used to separate keywords of each cluster.",
-    )
-    parser_keywords.add_argument(
-        "--banned-keywords",
-        default=None,
-        type=str,
-        help="List of banned keywords. To provide multiple words, separate by ',' (comma).",
-    )
-    parser_keywords.add_argument(
-        "--keyword-minimum-length",
-        default=3,
-        type=int,
-        help="Minimum length (in characters) of keyword candidates.",
-    )
-    parser_keywords.add_argument(
-        "--keyword-font-size",
-        default=10,
-        type=int,
-        help="Font size for displaying keywords.",
-    )
-    parser_keywords.add_argument(
-        "--very-common-tokens-cutoff",
-        default=0.01,
-        type=float,
-        help=(
-            "Proportion of words considered 'very common', which are disallowed to become "
-            "cluster keywords. Must be in [0, 1] range."
-        ),
-    )
-    parser_keywords.add_argument(
-        "--spacy-model-name",
-        default="pt_core_news_sm",
-        help="Spacy model name to apply lemmatization.",
-    )
-
-    parser_sbert = parser.add_argument_group("sbert arguments")
-    parser_sbert.add_argument(
-        "--sbert-device",
-        default=None,
-        type=str,
-        help="Device to embed documents using SBERT. If not provided, will use GPU if possible.",
-    )
-    parser_sbert.add_argument(
-        "--sbert-batch-size",
-        default=128,
-        type=int,
-        help="SBERT batch size for document embedding.",
-    )
-
-    parser_umap = parser.add_argument_group("umap arguments")
-    parser_umap.add_argument(
-        "--umap-random-state", default=182783, type=int, help="Random seed for UMAP."
-    )
-
-    parser_corpus = parser.add_argument_group("corpus arguments")
-    parser_corpus.add_argument(
-        "--max-chars-per-instance",
-        default=None,
-        type=int,
-        help="If set, truncate every instance up to the specified amount of characters.",
-    )
-    parser_corpus.add_argument(
-        "--corpus-file-sep",
-        default=",",
-        help="Column separator when reading corpus from a single file.",
-    )
-    parser_corpus.add_argument(
-        "--corpus-file-col-index",
-        default=0,
-        type=int,
-        help="Column index to keep when reading corpus from a single file.",
-    )
-    parser_corpus.add_argument(
-        "--corpus-dir-ext",
-        default="txt",
-        help="File extension to find files when reading corpus from a directory hierarchy.",
-    )
-    parser_corpus.add_argument(
-        "--source-sample-size",
-        default=None,
-        type=float,
-        help=(
-            "If provided, set the sample size for each corpus source. "
-            "Each source is sampled independently. For instance, if you provide N "
-            "data sources with a sample size of M, you'll end up with at most N * M samples. "
-            "Can be either a float in range [0, 1) (sample proportionally source size), "
-            "or an integer >= 1 (sets sample maximum size)."
-        ),
-    )
-    parser_corpus.add_argument(
-        "--sample-random-state",
-        default=8101192,
-        type=int,
-        help="Random state for source instance sampling.",
-    )
-
-    parser_seaborn = parser.add_argument_group("seaborn arguments")
-    parser_seaborn.add_argument(
-        "--seaborn-context",
-        default="paper",
-        help=(
-            "Set seaborn plot context. "
-            "See 'https://seaborn.pydata.org/generated/seaborn.set_context.html'."
-        ),
-    )
-    parser_seaborn.add_argument(
-        "--seaborn-style",
-        default="whitegrid",
-        help=(
-            "Set seaborn plot style. "
-            "See 'https://seaborn.pydata.org/generated/seaborn.set_style.html'."
-        ),
-    )
-    parser_seaborn.add_argument(
-        "--seaborn-font-scale",
-        default=1.0,
-        type=float,
-        help="Set seaborn font scaling factor.",
-    )
-
-    args = parser.parse_args()
-
-    args.cache_dir = os.path.abspath(args.cache_dir)
-    os.makedirs(args.cache_dir, exist_ok=True)
-
-    if os.path.dirname(args.output):
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
-
-    try:
-        spacy.load(args.spacy_model_name)
-
-    except OSError:
-        import spacy.cli  # pylint: disable="ungrouped-imports"
-
-        spacy.cli.download(args.spacy_model_name)
-
-    sns.set_theme(
-        context=args.seaborn_context,
-        style=args.seaborn_style,
-        palette="colorblind",
-        font_scale=args.seaborn_font_scale,
-    )
-
-    sns.set(rc={"axes.facecolor": args.background_color})
-
-    run(args)
